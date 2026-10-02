@@ -106,16 +106,7 @@ jobs:
               
               gh issue create \
                 --title "🎉 Oracle Ampere A1 VM #${vm_num} Provisioned (${ocpus}C / ${ram}G)!" \
-                --body "Hello @$REPO_OWNER,
-
-Your Oracle Cloud Ampere A1 instance has been successfully provisioned!
-
-- **Instance**: VM #${vm_num}
-- **Configuration**: ${ocpus} OCPUs / ${ram} GB RAM / 100 GB Boot Disk
-- **Instance OCID**: \`$inst_id\`
-- **Status**: Provisioning / Running
-
-Log in to your Oracle Cloud Console to view your public IP and connect." || true
+                --body "$(printf 'Hello @%s,\n\nYour Oracle Cloud Ampere A1 instance has been successfully provisioned!\n\n- **Instance**: VM #%s\n- **Configuration**: %s OCPUs / %s GB RAM / 100 GB Boot Disk\n- **Instance OCID**: `%s`\n- **Status**: Provisioning / Running\n\nLog in to your Oracle Cloud Console to view your public IP and connect.' "$REPO_OWNER" "$vm_num" "$ocpus" "$ram" "$inst_id")" || true
 
               return 0
             fi
