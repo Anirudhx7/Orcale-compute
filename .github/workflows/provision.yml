@@ -49,13 +49,14 @@ jobs:
           key_file=~/.oci/oci_api_key.pem
           CONFIG_EOF
 
-      - name: Continuous Provisioning Loop (5h 15m)
+      - name: Multi-Instance Quota Provisioner (5h 15m)
         id: provision
         env:
           TENANCY_ID: ${{ secrets.OCI_TENANCY_OCID }}
           SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
           SSH_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           printf '%s\n' "$SSH_KEY" > ./ssh_authorized_key.pub
 
@@ -80,13 +81,54 @@ jobs:
           echo "Target AD: $AD_NAME"
           echo "Target Image ID: $IMAGE_ID"
 
+          try_launch() {
+            local ocpus=$1
+            local ram=$2
+            local vm_num=$3
+
+            echo "  -> Trying ${ocpus} OCPU / ${ram} GB RAM (VM #${vm_num})..."
+            local resp=$(oci compute instance launch \
+              --max-attempts 1 \
+              --availability-domain "$AD_NAME" \
+              --compartment-id "$TENANCY_ID" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config "{\"ocpus\":$ocpus,\"memoryInGBs\":$ram}" \
+              --image-id "$IMAGE_ID" \
+              --subnet-id "$SUBNET_ID" \
+              --assign-public-ip true \
+              --boot-volume-size-in-gbs 100 \
+              --display-name "Altime-VM${vm_num}-${ocpus}C${ram}G" \
+              --ssh-authorized-keys-file ./ssh_authorized_key.pub 2>&1 || true)
+
+            if echo "$resp" | grep -q '"lifecycle-state": "PROVISIONING"'; then
+              local inst_id=$(echo "$resp" | jq -r '.data.id')
+              echo "  🎉 SUCCESS: VM #${vm_num} (${ocpus} OCPU / ${ram} GB RAM) created!"
+              
+              gh issue create \
+                --title "🎉 Oracle Ampere A1 VM #${vm_num} Provisioned (${ocpus}C / ${ram}G)!" \
+                --body "Hello @$REPO_OWNER,
+
+Your Oracle Cloud Ampere A1 instance has been successfully provisioned!
+
+- **Instance**: VM #${vm_num}
+- **Configuration**: ${ocpus} OCPUs / ${ram} GB RAM / 100 GB Boot Disk
+- **Instance OCID**: \`$inst_id\`
+- **Status**: Provisioning / Running
+
+Log in to your Oracle Cloud Console to view your public IP and connect." || true
+
+              return 0
+            fi
+            echo "     Unavailable: Out of host capacity"
+            return 1
+          }
+
           START_TIME=$(date +%s)
-          # Run for 5 hours and 15 minutes (18,900 seconds)
           MAX_DURATION=18900
           SLEEP_SECONDS=35
           ATTEMPT=0
 
-          echo "Starting 5h 15m continuous relay loop (checking every ~35s)..."
+          echo "Starting 5h 15m continuous quota-maximizing loop..."
 
           while [ $(($(date +%s) - START_TIME)) -lt $MAX_DURATION ]; do
             ATTEMPT=$((ATTEMPT + 1))
@@ -94,82 +136,63 @@ jobs:
             echo "--------------------------------------------------------"
             echo "Attempt #$ATTEMPT (Elapsed: ${ELAPSED_MINS}m) [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]"
 
-            # Check if an Ampere A1 instance already exists
-            EXISTING=$(oci compute instance list \
+            # Query current active/provisioning Ampere instances
+            INSTANCES=$(oci compute instance list \
               --compartment-id "$TENANCY_ID" \
               --lifecycle-state "RUNNING" \
               --lifecycle-state "PROVISIONING" \
-              --query 'data[?contains("shape", `A1.Flex`)]' 2>/dev/null | jq 'length // 0' 2>/dev/null || echo "0")
+              --query 'data[?contains("shape", `A1.Flex`)]' 2>/dev/null || echo "[]")
 
-            if [ "${EXISTING:-0}" -gt 0 ]; then
-              echo "An Ampere A1 instance is already running or provisioning ($EXISTING found). Stopping loop."
-              echo "success=false" >> "$GITHUB_OUTPUT"
+            INSTANCE_COUNT=$(echo "$INSTANCES" | jq 'if . == null then 0 else length end')
+            USED_OCPUS=$(echo "$INSTANCES" | jq '[.[] | (.["shape-config"].ocpus // .shapeConfig.ocpus // 0)] | add // 0' | awk '{print int($1)}')
+            USED_RAM=$(echo "$INSTANCES" | jq '[.[] | (.["shape-config"]["memory-in-gbs"] // .shapeConfig.memoryInGBs // 0)] | add // 0' | awk '{print int($1)}')
+
+            REMAINING_OCPUS=$((4 - USED_OCPUS))
+            REMAINING_RAM=$((24 - USED_RAM))
+
+            echo "Current Usage: ${INSTANCE_COUNT} instances, ${USED_OCPUS}/4 OCPUs, ${USED_RAM}/24 GB RAM"
+            echo "Remaining Quota: ${REMAINING_OCPUS} OCPUs, ${REMAINING_RAM} GB RAM"
+
+            # Check if all free tier quota is already claimed
+            if [ "$REMAINING_OCPUS" -le 0 ] || [ "$INSTANCE_COUNT" -ge 2 ]; then
+              echo "✅ Full Always-Free capacity reached ($USED_OCPUS OCPUs, $USED_RAM GB RAM across $INSTANCE_COUNT instances). Quota complete!"
               exit 0
             fi
 
-            # 1. CONTENDER 1: Attempt 4 OCPUs / 24 GB RAM / 100 GB Boot Disk
-            RESP_4C=$(oci compute instance launch \
-              --max-attempts 1 \
-              --availability-domain "$AD_NAME" \
-              --compartment-id "$TENANCY_ID" \
-              --shape "VM.Standard.A1.Flex" \
-              --shape-config '{"ocpus":4,"memoryInGBs":24}' \
-              --image-id "$IMAGE_ID" \
-              --subnet-id "$SUBNET_ID" \
-              --assign-public-ip true \
-              --boot-volume-size-in-gbs 100 \
-              --display-name "Altime-4C24G" \
-              --ssh-authorized-keys-file ./ssh_authorized_key.pub 2>&1 || true)
+            VM_NUM=$((INSTANCE_COUNT + 1))
+            PROVISIONED=0
 
-            if echo "$RESP_4C" | grep -q '"lifecycle-state": "PROVISIONING"'; then
-              echo "SUCCESS: 4 OCPU / 24 GB RAM machine created!"
-              INSTANCE_ID=$(echo "$RESP_4C" | jq -r '.data.id')
-              echo "success=true" >> "$GITHUB_OUTPUT"
-              echo "config=4 OCPUs / 24 GB RAM / 100 GB Storage" >> "$GITHUB_OUTPUT"
-              echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-              exit 0
+            # 1. Try 4 OCPU / 24 GB RAM (if entire quota is free)
+            if [ "$REMAINING_OCPUS" -ge 4 ] && [ "$REMAINING_RAM" -ge 24 ]; then
+              if try_launch 4 24 "$VM_NUM"; then
+                PROVISIONED=1
+              fi
             fi
 
-            # 2. CONTENDER 2: Attempt 2 OCPUs / 12 GB RAM / 100 GB Boot Disk
-            RESP_2C=$(oci compute instance launch \
-              --max-attempts 1 \
-              --availability-domain "$AD_NAME" \
-              --compartment-id "$TENANCY_ID" \
-              --shape "VM.Standard.A1.Flex" \
-              --shape-config '{"ocpus":2,"memoryInGBs":12}' \
-              --image-id "$IMAGE_ID" \
-              --subnet-id "$SUBNET_ID" \
-              --assign-public-ip true \
-              --boot-volume-size-in-gbs 100 \
-              --display-name "Altime-2C12G" \
-              --ssh-authorized-keys-file ./ssh_authorized_key.pub 2>&1 || true)
-
-            if echo "$RESP_2C" | grep -q '"lifecycle-state": "PROVISIONING"'; then
-              echo "SUCCESS: 2 OCPU / 12 GB RAM machine created!"
-              INSTANCE_ID=$(echo "$RESP_2C" | jq -r '.data.id')
-              echo "success=true" >> "$GITHUB_OUTPUT"
-              echo "config=2 OCPUs / 12 GB RAM / 100 GB Storage" >> "$GITHUB_OUTPUT"
-              echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-              exit 0
+            # 2. Try 2 OCPU / 12 GB RAM
+            if [ "$PROVISIONED" -eq 0 ] && [ "$REMAINING_OCPUS" -ge 2 ] && [ "$REMAINING_RAM" -ge 12 ]; then
+              if try_launch 2 12 "$VM_NUM"; then
+                PROVISIONED=1
+              fi
             fi
 
-            echo "Out of capacity. Sleeping ${SLEEP_SECONDS}s..."
+            # 3. Try 1 OCPU / 6 GB RAM
+            if [ "$PROVISIONED" -eq 0 ] && [ "$REMAINING_OCPUS" -ge 1 ] && [ "$REMAINING_RAM" -ge 6 ]; then
+              if try_launch 1 6 "$VM_NUM"; then
+                PROVISIONED=1
+              fi
+            fi
+
+            if [ "$PROVISIONED" -eq 1 ]; then
+              echo "VM provisioned! Checking if additional free quota remains..."
+              sleep 10
+              continue
+            fi
+
+            echo "All candidates out of capacity. Sleeping ${SLEEP_SECONDS}s..."
             sleep "$SLEEP_SECONDS"
           done
 
           echo "Target duration (5h 15m) reached. Dispatching next relay run..."
           gh workflow run provision.yml || echo "Cron fallback will trigger next run."
-          echo "success=false" >> "$GITHUB_OUTPUT"
           exit 0
-
-      - name: Send Email Notification on Success
-        if: steps.provision.outputs.success == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '🎉 Oracle Ampere A1 Instance Successfully Provisioned!',
-              body: `Hello @${context.repo.owner},\n\nYour Oracle Cloud Ampere A1 instance has been successfully provisioned!\n\n- **Configuration**: ${{ steps.provision.outputs.config }}\n- **Boot Volume**: 100 GB\n- **Instance OCID**: \`${{ steps.provision.outputs.instance_id }}\`\n- **Status**: Provisioning / Running\n\nLog in to your Oracle Cloud Console to check your public IP and connect.`
-            });
