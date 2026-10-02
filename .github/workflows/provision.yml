@@ -2,7 +2,7 @@ name: Provision Oracle Ampere A1
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -12,10 +12,12 @@ concurrency:
 permissions:
   issues: write
   contents: read
+  actions: write
 
 jobs:
   launch:
     runs-on: ubuntu-latest
+    timeout-minutes: 340
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -47,23 +49,50 @@ jobs:
           key_file=~/.oci/oci_api_key.pem
           CONFIG_EOF
 
-      - name: Check Existing Instances & Launch
+      - name: Continuous Provisioning Loop (5h 15m)
         id: provision
         env:
           TENANCY_ID: ${{ secrets.OCI_TENANCY_OCID }}
           SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
           SSH_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n' "$SSH_KEY" > ./ssh_authorized_key.pub
 
-          # 8 attempts spaced ~30 seconds apart (~4 minutes total per run)
-          TOTAL_ATTEMPTS=8
-          SLEEP_SECONDS=30
+          # Pre-fetch Availability Domain and ARM Image
+          AD_NAME=$(oci iam availability-domain list --query 'data[0].name' --raw-output 2>/dev/null || true)
+          if [ -z "$AD_NAME" ] || [ "$AD_NAME" = "null" ]; then
+            AD_NAME="yNXx:AP-MUMBAI-1-AD-1"
+          fi
 
-          for ((i=1; i<=TOTAL_ATTEMPTS; i++)); do
-            echo "=========================================="
-            echo "Attempt $i of $TOTAL_ATTEMPTS [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]"
-            echo "=========================================="
+          IMAGE_ID=$(oci compute image list \
+            --compartment-id "$TENANCY_ID" \
+            --operating-system "Canonical Ubuntu" \
+            --operating-system-version "24.04" \
+            --shape "VM.Standard.A1.Flex" \
+            --sort-by TIMECREATED --sort-order DESC \
+            --query 'data[0].id' --raw-output 2>/dev/null || true)
+
+          if [ -z "$IMAGE_ID" ] || [ "$IMAGE_ID" = "null" ] || [ "$IMAGE_ID" = "None" ]; then
+            IMAGE_ID="ocid1.image.oc1.ap-mumbai-1.aaaaaaaa5ybbcji7iwefoo2juley7gyh4yc6ht55nke2ujga76irm77q5pma"
+          fi
+
+          echo "Target AD: $AD_NAME"
+          echo "Target Image ID: $IMAGE_ID"
+
+          START_TIME=$(date +%s)
+          # Run for 5 hours and 15 minutes (18,900 seconds)
+          MAX_DURATION=18900
+          SLEEP_SECONDS=35
+          ATTEMPT=0
+
+          echo "Starting 5h 15m continuous relay loop (checking every ~35s)..."
+
+          while [ $(($(date +%s) - START_TIME)) -lt $MAX_DURATION ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            ELAPSED_MINS=$(( ($(date +%s) - START_TIME) / 60 ))
+            echo "--------------------------------------------------------"
+            echo "Attempt #$ATTEMPT (Elapsed: ${ELAPSED_MINS}m) [$(date -u +'%Y-%m-%d %H:%M:%S UTC')]"
 
             # Check if an Ampere A1 instance already exists
             EXISTING=$(oci compute instance list \
@@ -73,13 +102,12 @@ jobs:
               --query 'data[?contains("shape", `A1.Flex`)]' 2>/dev/null | jq 'length // 0' 2>/dev/null || echo "0")
 
             if [ "${EXISTING:-0}" -gt 0 ]; then
-              echo "An Ampere A1 instance is already running or provisioning ($EXISTING found). Exiting cleanly."
+              echo "An Ampere A1 instance is already running or provisioning ($EXISTING found). Stopping loop."
               echo "success=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
             # 1. CONTENDER 1: Attempt 4 OCPUs / 24 GB RAM / 100 GB Boot Disk
-            echo "Attempting Contender 1: 4 OCPUs / 24 GB RAM / 100 GB Disk..."
             RESP_4C=$(oci compute instance launch \
               --max-attempts 1 \
               --availability-domain "$AD_NAME" \
@@ -102,10 +130,7 @@ jobs:
               exit 0
             fi
 
-            echo "4 OCPU unavailable. Falling back to Contender 2..."
-
             # 2. CONTENDER 2: Attempt 2 OCPUs / 12 GB RAM / 100 GB Boot Disk
-            echo "Attempting Contender 2: 2 OCPUs / 12 GB RAM / 100 GB Disk..."
             RESP_2C=$(oci compute instance launch \
               --max-attempts 1 \
               --availability-domain "$AD_NAME" \
@@ -128,14 +153,12 @@ jobs:
               exit 0
             fi
 
-            echo "Both configurations out of capacity on attempt $i."
-            if [ "$i" -lt "$TOTAL_ATTEMPTS" ]; then
-              echo "Waiting ${SLEEP_SECONDS}s before attempt $((i+1))..."
-              sleep "$SLEEP_SECONDS"
-            fi
+            echo "Out of capacity. Sleeping ${SLEEP_SECONDS}s..."
+            sleep "$SLEEP_SECONDS"
           done
 
-          echo "Run completed: no capacity found across $TOTAL_ATTEMPTS attempts. Next scheduled run will take over shortly."
+          echo "Target duration (5h 15m) reached. Dispatching next relay run..."
+          gh workflow run provision.yml || echo "Cron fallback will trigger next run."
           echo "success=false" >> "$GITHUB_OUTPUT"
           exit 0
 
