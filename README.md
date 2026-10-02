@@ -17,11 +17,11 @@ The workflow does not prematurely stop if a smaller instance is secured. On each
 - **Remaining RAM**: `24 GB - (current active RAM)`
 
 #### Hierarchy per Instance:
-1. **Contender 1**: 4 OCPUs / 24 GB RAM / 100 GB Boot Disk (if full quota is available).
-2. **Contender 2**: 2 OCPUs / 12 GB RAM / 100 GB Boot Disk.
-3. **Contender 3**: 1 OCPU / 6 GB RAM / 100 GB Boot Disk.
+1. **Contender 1**: 4 OCPUs / 24 GB RAM / 50 GB Boot Disk (if full quota is available).
+2. **Contender 2**: 2 OCPUs / 12 GB RAM / 50 GB Boot Disk.
+3. **Contender 3**: 1 OCPU / 6 GB RAM / 50 GB Boot Disk.
 
-*If VM #1 is claimed at 2 OCPUs / 12 GB RAM, the runner instantly continues hunting for VM #2 (2 OCPUs / 12 GB RAM) until all 4 OCPUs and 200 GB storage are claimed!*
+*If VM #1 is claimed at 2 OCPUs / 12 GB RAM / 50 GB disk, the runner instantly continues hunting for VM #2 (2 OCPUs / 12 GB RAM / 50 GB disk) while keeping your existing Micro instance (50 GB) alive—safely utilizing 150 GB of your 200 GB lifetime free storage!*
 
 ### 3. Immediate Email Notifications (Zero Delay)
 - The instant any instance moves to `"lifecycle-state": "PROVISIONING"`, the runner immediately opens a GitHub Issue with `--assignee` targeting the repository owner.

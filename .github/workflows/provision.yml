@@ -96,7 +96,7 @@ jobs:
               --image-id "$IMAGE_ID" \
               --subnet-id "$SUBNET_ID" \
               --assign-public-ip true \
-              --boot-volume-size-in-gbs 100 \
+              --boot-volume-size-in-gbs 50 \
               --display-name "Altime-VM${vm_num}-${ocpus}C${ram}G" \
               --ssh-authorized-keys-file ./ssh_authorized_key.pub 2>&1 || true)
 
@@ -107,7 +107,7 @@ jobs:
               gh issue create \
                 --assignee "$REPO_OWNER" \
                 --title "🎉 Oracle Ampere A1 VM #${vm_num} Provisioned (${ocpus}C / ${ram}G)!" \
-                --body "$(printf 'Hello @%s,\n\nYour Oracle Cloud Ampere A1 instance has been successfully provisioned!\n\n- **Instance**: VM #%s\n- **Configuration**: %s OCPUs / %s GB RAM / 100 GB Boot Disk\n- **Instance OCID**: `%s`\n- **Status**: Provisioning / Running\n\nLog in to your Oracle Cloud Console to view your public IP and connect.' "$REPO_OWNER" "$vm_num" "$ocpus" "$ram" "$inst_id")" || true
+                --body "$(printf 'Hello @%s,\n\nYour Oracle Cloud Ampere A1 instance has been successfully provisioned!\n\n- **Instance**: VM #%s\n- **Configuration**: %s OCPUs / %s GB RAM / 50 GB Boot Disk\n- **Instance OCID**: `%s`\n- **Status**: Provisioning / Running\n\nLog in to your Oracle Cloud Console to view your public IP and connect.' "$REPO_OWNER" "$vm_num" "$ocpus" "$ram" "$inst_id")" || true
 
               return 0
             fi
