@@ -62,9 +62,9 @@ jobs:
             --compartment-id "$TENANCY_ID" \
             --lifecycle-state "RUNNING" \
             --lifecycle-state "PROVISIONING" \
-            --query 'data[?contains("shape", `A1.Flex`)]' 2>/dev/null | jq 'if . == null then 0 else length end')
+            --query 'data[?contains("shape", `A1.Flex`)]' 2>/dev/null | jq 'length // 0' 2>/dev/null || echo "0")
 
-          if [ "$EXISTING" -gt 0 ]; then
+          if [ "${EXISTING:-0}" -gt 0 ]; then
             echo "An Ampere A1 instance is already running or provisioning ($EXISTING found). Exiting cleanly."
             echo "success=false" >> "$GITHUB_OUTPUT"
             exit 0
