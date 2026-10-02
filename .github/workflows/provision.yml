@@ -2,7 +2,7 @@ name: Provision Oracle Ampere A1
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 concurrency:
@@ -22,10 +22,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install OCI CLI & jq
+      - name: Install OCI CLI
         run: |
-          pip install --upgrade pip oci-cli
-          sudo apt-get update && sudo apt-get install -y jq
+          pip install oci-cli
 
       - name: Configure OCI Authentication
         env:
@@ -95,6 +94,7 @@ jobs:
           # 1. CONTENDER 1: Attempt 4 OCPUs / 24 GB RAM / 100 GB Boot Disk
           echo "Attempting Contender 1: 4 OCPUs / 24 GB RAM / 100 GB Disk..."
           RESP_4C=$(oci compute instance launch \
+            --max-attempts 1 \
             --availability-domain "$AD_NAME" \
             --compartment-id "$TENANCY_ID" \
             --shape "VM.Standard.A1.Flex" \
@@ -120,6 +120,7 @@ jobs:
           # 2. CONTENDER 2: Attempt 2 OCPUs / 12 GB RAM / 100 GB Boot Disk
           echo "Attempting Contender 2: 2 OCPUs / 12 GB RAM / 100 GB Disk..."
           RESP_2C=$(oci compute instance launch \
+            --max-attempts 1 \
             --availability-domain "$AD_NAME" \
             --compartment-id "$TENANCY_ID" \
             --shape "VM.Standard.A1.Flex" \
